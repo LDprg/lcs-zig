@@ -7,6 +7,7 @@ const LCSBenchmark = struct {
     str1: []const u8,
     str2: []const u8,
 
+
     fn init(
         loops: usize,
         func: *const fn (std.mem.Allocator, str1: []const u8, str2: []const u8) std.mem.Allocator.Error![]const u8,
@@ -23,27 +24,35 @@ const LCSBenchmark = struct {
 
     pub fn run(self: LCSBenchmark, alloc: std.mem.Allocator) void {
         for (0..self.loops) |_| {
-            std.mem.doNotOptimizeAway(self.func(alloc, self.str1, self.str2));
+            const data = self.func(alloc, self.str1, self.str2) catch std.debug.panic("FAILED", .{});
+            std.mem.doNotOptimizeAway(data);
+            alloc.free(data);
         }
     }
 };
 
 pub fn main() !void {
+    const runs = 20;
     const str1 = "abcdxyz";
     const str2 = "xyzabcd";
 
-    const alloc = std.heap.page_allocator;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const alloc = gpa.allocator();
     const stdout = std.io.getStdOut().writer();
     var bench = zbench.Benchmark.init(alloc, .{});
-    defer bench.deinit();
+    defer {
+        bench.deinit();
+        const deinit_status = gpa.deinit();
+        if (deinit_status == .leak) std.debug.panic("Memory leak detected", .{});
+    }
 
-    try bench.addParam("Reference impl.", &LCSBenchmark.init(100_00, refLCS, str1, str2), .{
-        .iterations = 10,
+    try bench.addParam("Reference impl.", &LCSBenchmark.init(1_000, refLCS, str1, str2), .{
+        .iterations = runs,
         .track_allocations = true,
         .use_shuffling_allocator = true,
     });
-    try bench.addParam("Lower memory impl.", &LCSBenchmark.init(100_00, lessSpaceLCS, str1, str2), .{
-        .iterations = 10,
+    try bench.addParam("Lower memory impl.", &LCSBenchmark.init(1_000, lessSpaceLCS, str1, str2), .{
+        .iterations = runs,
         .track_allocations = true,
         .use_shuffling_allocator = true,
     });
@@ -74,6 +83,18 @@ pub fn main() !void {
             try x.prettyPrint(alloc, stdout, true);
         },
     };
+}
+
+test "Ref LCS impl." {
+    const alloc = std.testing.allocator;
+    const str1 = "abcdxyz";
+    const str2 = "xyzabcd";
+    const sol = "abcd";
+
+    const res = try refLCS(alloc, str1, str2);
+    defer alloc.free(res);
+
+    try std.testing.expect(std.mem.eql(u8, sol, res));
 }
 
 pub fn refLCS(alloc: std.mem.Allocator, str1: []const u8, str2: []const u8) std.mem.Allocator.Error![]const u8 {
@@ -123,13 +144,22 @@ pub fn refLCS(alloc: std.mem.Allocator, str1: []const u8, str2: []const u8) std.
     return out;
 }
 
+
+test "Less Space LCS impl." {
+    const alloc = std.testing.allocator;
+    const str1 = "abcdxyz";
+    const str2 = "xyzabcd";
+    const sol = "abcd";
+
+    const res = try lessSpaceLCS(alloc, str1, str2);
+    defer alloc.free(res);
+
+    try std.testing.expect(std.mem.eql(u8, sol, res));
+}
 pub fn lessSpaceLCS(alloc: std.mem.Allocator, str1: []const u8, str2: []const u8) std.mem.Allocator.Error![]const u8 {
     var table: [][]usize = try alloc.alloc([]usize, str1.len);
     for (table) |*row| {
         row.* = try alloc.alloc(usize, str2.len);
-        for (row.*) |*elem| {
-            elem.* = 0;
-        }
     }
     defer {
         for (table) |*row| {
